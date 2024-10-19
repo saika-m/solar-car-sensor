@@ -16,25 +16,19 @@ const (
 )
 
 func main() {
-	// Initialize periph.io
 	if _, err := host.Init(); err != nil {
 		log.Fatal(err)
 	}
 
-	// Open I2C bus
 	bus, err := i2creg.Open("")
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer bus.Close()
 
-	// Create device for BNO055
 	bno055 := &i2c.Dev{Addr: BNO055_ADDRESS, Bus: bus}
-
-	// Create device for BMP280
 	bmp280 := &i2c.Dev{Addr: BMP280_ADDRESS, Bus: bus}
 
-	// Initialize sensors
 	if err := initBNO055(bno055); err != nil {
 		log.Fatal(err)
 	}
@@ -43,13 +37,11 @@ func main() {
 	}
 
 	for {
-		// Read Euler angles from BNO055
 		heading, roll, pitch, err := readEulerAngles(bno055)
 		if err != nil {
 			log.Println("Error reading BNO055:", err)
 		}
 
-		// Read temperature and pressure from BMP280
 		temp, pressure, err := readBMP280(bmp280)
 		if err != nil {
 			log.Println("Error reading BMP280:", err)
@@ -63,7 +55,6 @@ func main() {
 }
 
 func initBNO055(dev *i2c.Dev) error {
-	// Set operation mode to NDOF
 	if err := dev.Tx([]byte{0x3D, 0x0C}, nil); err != nil {
 		return err
 	}
