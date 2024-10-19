@@ -74,8 +74,8 @@ func openI2CDevice() (windows.Handle, error) {
 		0,
 		0,
 	)
-	if handle == windows.InvalidHandle {
-		return 0, err
+	if handle == uintptr(windows.InvalidHandle) {
+		return windows.InvalidHandle, err
 	}
 	return windows.Handle(handle), nil
 }
@@ -94,7 +94,7 @@ func i2cTransfer(handle windows.Handle, addr uint16, writeData []byte, readData 
 		Length:      uint32(len(readData)),
 		Buffer:      uintptr(unsafe.Pointer(&readData[0])),
 	}
-	_, _, err := deviceIoControl.Call(
+	ret, _, err := deviceIoControl.Call(
 		uintptr(handle),
 		0x22C004, // IOCTL_I2C_TRANSFER
 		uintptr(unsafe.Pointer(&writeTransfer)),
@@ -104,7 +104,7 @@ func i2cTransfer(handle windows.Handle, addr uint16, writeData []byte, readData 
 		uintptr(unsafe.Pointer(&bytesReturned)),
 		0,
 	)
-	if err != windows.ERROR_SUCCESS {
+	if ret == 0 {
 		return err
 	}
 	return nil
