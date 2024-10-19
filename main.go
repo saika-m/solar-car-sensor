@@ -33,40 +33,52 @@ type I2C_TRANSFER struct {
 }
 
 func main() {
-	handle, err := openI2CDevice()
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer windows.CloseHandle(handle)
+	deviceNames := []string{"\\\\.\\4DC5", "\\\\.\\4DC6", "\\\\.\\4DE8", "\\\\.\\4DE9", "\\\\.\\4DEA", "\\\\.\\4DAB"}
 
-	for {
-		// Read Euler angles from BNO055
-		heading, roll, pitch, err := readEulerAngles(handle)
+	for _, deviceName := range deviceNames {
+		handle, err := openI2CDevice(deviceName)
 		if err != nil {
-			log.Println("Error reading BNO055:", err)
-		} else {
-			fmt.Printf("Heading: %.2f, Roll: %.2f, Pitch: %.2f\n", heading, roll, pitch)
+			fmt.Printf("Failed to open %s: %v\n", deviceName, err)
+			continue
 		}
+		defer windows.CloseHandle(handle)
 
-		// Read temperature and pressure from BMP280
-		temp, pressure, err := readBMP280(handle)
-		if err != nil {
-			log.Println("Error reading BMP280:", err)
-		} else {
-			fmt.Printf("Temperature: %.2f°C, Pressure: %.2f Pa\n", temp, pressure)
+		fmt.Printf("Scanning %s...\n", deviceName)
+		scanI2C(handle)
+		fmt.Println("Scan complete.")
+
+		if devicesFound(handle) {
+			fmt.Printf("Devices found on %s\n", deviceName)
+			for {
+				// Read Euler angles from BNO055
+				heading, roll, pitch, err := readEulerAngles(handle)
+				if err != nil {
+					log.Println("Error reading BNO055:", err)
+				} else {
+					fmt.Printf("Heading: %.2f, Roll: %.2f, Pitch: %.2f\n", heading, roll, pitch)
+				}
+
+				// Read temperature and pressure from BMP280
+				temp, pressure, err := readBMP280(handle)
+				if err != nil {
+					log.Println("Error reading BMP280:", err)
+				} else {
+					fmt.Printf("Temperature: %.2f°C, Pressure: %.2f Pa\n", temp, pressure)
+				}
+
+				time.Sleep(100 * time.Millisecond)
+			}
 		}
-
-		time.Sleep(100 * time.Millisecond)
 	}
 }
 
-func openI2CDevice() (windows.Handle, error) {
-	deviceName, err := windows.UTF16PtrFromString("\\\\.\\I2C1")
+func openI2CDevice(deviceName string) (windows.Handle, error) {
+	name, err := windows.UTF16PtrFromString(deviceName)
 	if err != nil {
 		return 0, err
 	}
 	handle, _, err := createFile.Call(
-		uintptr(unsafe.Pointer(deviceName)),
+		uintptr(unsafe.Pointer(name)),
 		GENERIC_READ|GENERIC_WRITE,
 		FILE_SHARE_READ|FILE_SHARE_WRITE,
 		0,
@@ -133,4 +145,19 @@ func readBMP280(handle windows.Handle) (float32, float32, error) {
 	temp := float32((uint32(data[3])<<12)|(uint32(data[4])<<4)|(uint32(data[5])>>4)) / 100.0
 
 	return temp, pressure, nil
+}
+
+func scanI2C(handle windows.Handle) {
+	for addr := uint16(0); addr < 128; addr++ {
+		err := i2cTransfer(handle, addr, []byte{0}, []byte{0})
+		if err == nil {
+			fmt.Printf("Device found at address: 0x%02X\n", addr)
+		}
+	}
+}
+
+func devicesFound(handle windows.Handle) bool {
+	err1 := i2cTransfer(handle, BNO055_ADDRESS, []byte{0}, []byte{0})
+	err2 := i2cTransfer(handle, BMP280_ADDRESS, []byte{0}, []byte{0})
+	return err1 == nil && err2 == nil
 }
