@@ -4,31 +4,54 @@ import (
 	"fmt"
 	"log"
 	"time"
+	"unsafe"
 
-	"github.com/sigurn/crc16"
-	"github.com/tarm/serial"
+	"golang.org/x/sys/windows"
 )
 
+const (
+	BNO055_ADDRESS   = 0x28
+	BMP280_ADDRESS   = 0x76
+	FILE_SHARE_READ  = 0x00000001
+	FILE_SHARE_WRITE = 0x00000002
+	OPEN_EXISTING    = 3
+	GENERIC_READ     = 0x80000000
+	GENERIC_WRITE    = 0x40000000
+)
+
+var (
+	kernel32        = windows.NewLazySystemDLL("kernel32.dll")
+	createFile      = kernel32.NewProc("CreateFileW")
+	deviceIoControl = kernel32.NewProc("DeviceIoControl")
+)
+
+type I2C_TRANSFER struct {
+	DataAddress uint32
+	Flags       uint32
+	Length      uint32
+	Buffer      uintptr
+}
+
 func main() {
-	c := &serial.Config{Name: "COM3", Baud: 115200}
-	s, err := serial.OpenPort(c)
+	handle, err := openI2CDevice()
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer windows.CloseHandle(handle)
 
 	for {
-		// Read Euler angles
-		heading, roll, pitch, err := readEulerAngles(s)
+		// Read Euler angles from BNO055
+		heading, roll, pitch, err := readEulerAngles(handle)
 		if err != nil {
-			log.Println("Error reading Euler angles:", err)
+			log.Println("Error reading BNO055:", err)
 		} else {
 			fmt.Printf("Heading: %.2f, Roll: %.2f, Pitch: %.2f\n", heading, roll, pitch)
 		}
 
-		// Read temperature and pressure
-		temp, pressure, err := readTempPressure(s)
+		// Read temperature and pressure from BMP280
+		temp, pressure, err := readBMP280(handle)
 		if err != nil {
-			log.Println("Error reading temperature and pressure:", err)
+			log.Println("Error reading BMP280:", err)
 		} else {
 			fmt.Printf("Temperature: %.2f°C, Pressure: %.2f Pa\n", temp, pressure)
 		}
@@ -37,51 +60,77 @@ func main() {
 	}
 }
 
-func readEulerAngles(s *serial.Port) (float32, float32, float32, error) {
-	cmd := []byte{0xA5, 0x45, 0xAA, 0x01, 0x00, 0x00}
-	table := crc16.MakeTable(crc16.CRC16_MODBUS)
-	crc := crc16.Checksum(cmd[:4], table)
-	cmd[4] = byte(crc & 0xFF)
-	cmd[5] = byte((crc >> 8) & 0xFF)
-
-	_, err := s.Write(cmd)
+func openI2CDevice() (windows.Handle, error) {
+	deviceName, err := windows.UTF16PtrFromString("\\\\.\\I2C1")
 	if err != nil {
+		return 0, err
+	}
+	handle, _, err := createFile.Call(
+		uintptr(unsafe.Pointer(deviceName)),
+		GENERIC_READ|GENERIC_WRITE,
+		FILE_SHARE_READ|FILE_SHARE_WRITE,
+		0,
+		OPEN_EXISTING,
+		0,
+		0,
+	)
+	if handle == windows.InvalidHandle {
+		return 0, err
+	}
+	return windows.Handle(handle), nil
+}
+
+func i2cTransfer(handle windows.Handle, addr uint16, writeData []byte, readData []byte) error {
+	var bytesReturned uint32
+	writeTransfer := I2C_TRANSFER{
+		DataAddress: uint32(addr),
+		Flags:       0,
+		Length:      uint32(len(writeData)),
+		Buffer:      uintptr(unsafe.Pointer(&writeData[0])),
+	}
+	readTransfer := I2C_TRANSFER{
+		DataAddress: uint32(addr),
+		Flags:       1,
+		Length:      uint32(len(readData)),
+		Buffer:      uintptr(unsafe.Pointer(&readData[0])),
+	}
+	_, _, err := deviceIoControl.Call(
+		uintptr(handle),
+		0x22C004, // IOCTL_I2C_TRANSFER
+		uintptr(unsafe.Pointer(&writeTransfer)),
+		unsafe.Sizeof(writeTransfer),
+		uintptr(unsafe.Pointer(&readTransfer)),
+		unsafe.Sizeof(readTransfer),
+		uintptr(unsafe.Pointer(&bytesReturned)),
+		0,
+	)
+	if err != windows.ERROR_SUCCESS {
+		return err
+	}
+	return nil
+}
+
+func readEulerAngles(handle windows.Handle) (float32, float32, float32, error) {
+	data := make([]byte, 6)
+	if err := i2cTransfer(handle, BNO055_ADDRESS, []byte{0x1A}, data); err != nil {
 		return 0, 0, 0, err
 	}
 
-	buf := make([]byte, 11)
-	_, err = s.Read(buf)
-	if err != nil {
-		return 0, 0, 0, err
-	}
-
-	heading := float32(int16(buf[3])<<8|int16(buf[4])) / 100.0
-	roll := float32(int16(buf[5])<<8|int16(buf[6])) / 100.0
-	pitch := float32(int16(buf[7])<<8|int16(buf[8])) / 100.0
+	heading := float32(int16(data[0])|int16(data[1])<<8) / 16.0
+	roll := float32(int16(data[2])|int16(data[3])<<8) / 16.0
+	pitch := float32(int16(data[4])|int16(data[5])<<8) / 16.0
 
 	return heading, roll, pitch, nil
 }
 
-func readTempPressure(s *serial.Port) (float32, float32, error) {
-	cmd := []byte{0xA5, 0x45, 0xAA, 0x02, 0x00, 0x00}
-	table := crc16.MakeTable(crc16.CRC16_MODBUS)
-	crc := crc16.Checksum(cmd[:4], table)
-	cmd[4] = byte(crc & 0xFF)
-	cmd[5] = byte((crc >> 8) & 0xFF)
-
-	_, err := s.Write(cmd)
-	if err != nil {
+func readBMP280(handle windows.Handle) (float32, float32, error) {
+	data := make([]byte, 6)
+	if err := i2cTransfer(handle, BMP280_ADDRESS, []byte{0xF7}, data); err != nil {
 		return 0, 0, err
 	}
 
-	buf := make([]byte, 11)
-	_, err = s.Read(buf)
-	if err != nil {
-		return 0, 0, err
-	}
-
-	temp := float32(int16(buf[3])<<8|int16(buf[4])) / 100.0
-	pressure := float32(int32(buf[5])<<16|int32(buf[6])<<8|int32(buf[7])) / 100.0
+	pressure := float32((uint32(data[0])<<12)|(uint32(data[1])<<4)|(uint32(data[2])>>4)) / 100.0
+	temp := float32((uint32(data[3])<<12)|(uint32(data[4])<<4)|(uint32(data[5])>>4)) / 100.0
 
 	return temp, pressure, nil
 }
