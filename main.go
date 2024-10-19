@@ -1,10 +1,9 @@
-package ard_main
+package main
 
 import (
 	"bufio"
 	"fmt"
 	"log"
-	"strconv"
 	"strings"
 	"time"
 
@@ -44,6 +43,7 @@ func main() {
 	reader := bufio.NewReader(port)
 
 	fmt.Println("Reading sensor data from Arduino...")
+	fmt.Println("Press Ctrl+C to exit")
 
 	for {
 		line, err := reader.ReadString('\n')
@@ -60,24 +60,14 @@ func main() {
 }
 
 func processData(data string) {
+	fmt.Println("Received data:", data)
+
 	parts := strings.Split(data, ",")
-	if len(parts) != 9 {
-		log.Printf("Unexpected data format: %s", data)
-		return
+	fmt.Printf("Number of data points: %d\n", len(parts))
+
+	for i, part := range parts {
+		fmt.Printf("Data point %d: %s\n", i+1, part)
 	}
 
-	heading, _ := strconv.ParseFloat(parts[0], 64)
-	roll, _ := strconv.ParseFloat(parts[1], 64)
-	pitch, _ := strconv.ParseFloat(parts[2], 64)
-	temp, _ := strconv.ParseFloat(parts[3], 64)
-	pressure, _ := strconv.ParseFloat(parts[4], 64)
-	altitude, _ := strconv.ParseFloat(parts[5], 64)
-	accX, _ := strconv.ParseFloat(parts[6], 64)
-	accY, _ := strconv.ParseFloat(parts[7], 64)
-	accZ, _ := strconv.ParseFloat(parts[8], 64)
-
-	fmt.Printf("Heading: %.2f, Roll: %.2f, Pitch: %.2f\n", heading, roll, pitch)
-	fmt.Printf("Temperature: %.2f°C, Pressure: %.2f Pa, Altitude: %.2f m\n", temp, pressure, altitude)
-	fmt.Printf("Acceleration: X=%.2f, Y=%.2f, Z=%.2f m/s²\n", accX, accY, accZ)
 	fmt.Println("--------------------")
 }
