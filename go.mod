@@ -1,8 +1,5 @@
 module sensor
 
-go 1.22.5
+go 1.16
 
-require (
-	periph.io/x/conn/v3 v3.7.1 // indirect
-	periph.io/x/host/v3 v3.8.2 // indirect
-)
+require golang.org/x/sys v0.26.0
