@@ -1,4 +1,4 @@
-package main
+package win_main
 
 import (
 	"fmt"
@@ -188,7 +188,7 @@ func readBMP280(handle windows.Handle) (float32, float32, error) {
 }
 
 func calcAltitude(seaLevel, pressure float32) float32 {
-	return 44330 * (1 - math.Pow(float64(pressure/100)/float64(seaLevel), 0.1903))
+	return float32(44330 * (1 - math.Pow(float64(pressure/100)/float64(seaLevel), 0.1903)))
 }
 
 func readAccelerometer(handle windows.Handle) (float32, float32, float32, error) {
