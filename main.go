@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -60,13 +61,26 @@ func main() {
 }
 
 func processData(data string) {
-	fmt.Println("Received data:", data)
-
 	parts := strings.Split(data, ",")
-	fmt.Printf("Number of data points: %d\n", len(parts))
+	validParts := make([]string, 0)
 
-	for i, part := range parts {
-		fmt.Printf("Data point %d: %s\n", i+1, part)
+	for _, part := range parts {
+		if part = strings.TrimSpace(part); part != "" {
+			validParts = append(validParts, part)
+		}
+	}
+
+	if len(validParts) == 0 {
+		return // Skip empty lines
+	}
+
+	fmt.Println("Valid data points:")
+	for i, part := range validParts {
+		if value, err := strconv.ParseFloat(part, 64); err == nil {
+			fmt.Printf("Data point %d: %.2f\n", i+1, value)
+		} else {
+			fmt.Printf("Data point %d: %s (non-numeric)\n", i+1, part)
+		}
 	}
 
 	fmt.Println("--------------------")
