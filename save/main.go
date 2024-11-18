@@ -4,96 +4,72 @@ import (
 	"bufio"
 	"fmt"
 	"log"
-	"net/http"
 	"regexp"
 	"strings"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"go.bug.st/serial"
 )
 
 // SensorData struct to hold all the measurements
 type SensorData struct {
 	// Accelerometer data (mg)
-	AccX, AccY, AccZ float64 `json:"accX,accY,accZ"`
+	AccX, AccY, AccZ float64
 	// Magnetometer data (µT)
-	MagX, MagY, MagZ float64 `json:"magX,magY,magZ"`
+	MagX, MagY, MagZ float64
 	// Gyroscope data (dps)
-	GyrX, GyrY, GyrZ float64 `json:"gyrX,gyrY,gyrZ"`
+	GyrX, GyrY, GyrZ float64
 	// Linear acceleration (mg)
-	LiaX, LiaY, LiaZ float64 `json:"liaX,liaY,liaZ"`
+	LiaX, LiaY, LiaZ float64
 	// Gravity vector (mg)
-	GrvX, GrvY, GrvZ float64 `json:"grvX,grvY,grvZ"`
+	GrvX, GrvY, GrvZ float64
 	// Euler angles (degrees)
-	EulHeading, EulRoll, EulPitch float64 `json:"eulHeading,eulRoll,eulPitch"`
+	EulHeading, EulRoll, EulPitch float64
 	// Quaternion (no unit)
-	QuaW, QuaX, QuaY, QuaZ float64 `json:"quaW,quaX,quaY,quaZ"`
-}
-
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool {
-		return true // Allow all origins for development
-	},
+	QuaW, QuaX, QuaY, QuaZ float64
 }
 
 func main() {
-	// Setup websocket handler
-	http.HandleFunc("/ws", handleWebSocket)
+	selectedPort := "COM3"
 
-	fmt.Println("Server starting on :8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
-}
-
-func handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Printf("WebSocket upgrade error: %v", err)
-		return
+	// Open the serial port
+	mode := &serial.Mode{
+		BaudRate: 115200,
 	}
-	defer conn.Close()
-
-	// Open serial port
-	port, err := serial.Open("COM3", &serial.Mode{BaudRate: 115200})
+	port, err := serial.Open(selectedPort, mode)
 	if err != nil {
-		log.Printf("Serial port error: %v", err)
-		return
+		log.Fatal(err)
 	}
 	defer port.Close()
 
 	reader := bufio.NewReader(port)
-	sensorData := &SensorData{}
+	var sensorData SensorData
+
+	fmt.Println("Reading sensor data from COM3...")
+	fmt.Println("Press Ctrl+C to exit")
 
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
-			log.Printf("Serial read error: %v", err)
+			log.Printf("Error reading from serial port: %v", err)
 			continue
 		}
 
-		// Process the data
-		if processData(strings.TrimSpace(line), sensorData) {
-			// Send the updated sensor data through WebSocket
-			err = conn.WriteJSON(sensorData)
-			if err != nil {
-				log.Printf("WebSocket write error: %v", err)
-				return
-			}
-		}
+		// Process the received data
+		processData(strings.TrimSpace(line), &sensorData)
 
 		time.Sleep(100 * time.Millisecond)
 	}
 }
 
-func processData(data string, sensorData *SensorData) bool {
+func processData(data string, sensorData *SensorData) {
 	// Skip start and end markers
 	if strings.Contains(data, "print start") || strings.Contains(data, "print end") {
-		return false
+		return
 	}
 
 	// Regular expression to extract numbers
 	re := regexp.MustCompile(`[-]?\d+\.\d+`)
-	updated := false
 
 	// Parse different sensor data based on the line prefix
 	switch {
@@ -102,7 +78,7 @@ func processData(data string, sensorData *SensorData) bool {
 		if len(numbers) >= 3 {
 			fmt.Sscanf(strings.Join(numbers, " "), "%f %f %f",
 				&sensorData.AccX, &sensorData.AccY, &sensorData.AccZ)
-			updated = true
+			printAccelerometer(*sensorData)
 		}
 
 	case strings.Contains(data, "mag analog"):
@@ -110,7 +86,7 @@ func processData(data string, sensorData *SensorData) bool {
 		if len(numbers) >= 3 {
 			fmt.Sscanf(strings.Join(numbers, " "), "%f %f %f",
 				&sensorData.MagX, &sensorData.MagY, &sensorData.MagZ)
-			updated = true
+			printMagnetometer(*sensorData)
 		}
 
 	case strings.Contains(data, "gyr analog"):
@@ -118,7 +94,7 @@ func processData(data string, sensorData *SensorData) bool {
 		if len(numbers) >= 3 {
 			fmt.Sscanf(strings.Join(numbers, " "), "%f %f %f",
 				&sensorData.GyrX, &sensorData.GyrY, &sensorData.GyrZ)
-			updated = true
+			printGyroscope(*sensorData)
 		}
 
 	case strings.Contains(data, "lia analog"):
@@ -126,7 +102,7 @@ func processData(data string, sensorData *SensorData) bool {
 		if len(numbers) >= 3 {
 			fmt.Sscanf(strings.Join(numbers, " "), "%f %f %f",
 				&sensorData.LiaX, &sensorData.LiaY, &sensorData.LiaZ)
-			updated = true
+			printLinearAcceleration(*sensorData)
 		}
 
 	case strings.Contains(data, "grv analog"):
@@ -134,7 +110,7 @@ func processData(data string, sensorData *SensorData) bool {
 		if len(numbers) >= 3 {
 			fmt.Sscanf(strings.Join(numbers, " "), "%f %f %f",
 				&sensorData.GrvX, &sensorData.GrvY, &sensorData.GrvZ)
-			updated = true
+			printGravity(*sensorData)
 		}
 
 	case strings.Contains(data, "eul analog"):
@@ -142,7 +118,7 @@ func processData(data string, sensorData *SensorData) bool {
 		if len(numbers) >= 3 {
 			fmt.Sscanf(strings.Join(numbers, " "), "%f %f %f",
 				&sensorData.EulHeading, &sensorData.EulRoll, &sensorData.EulPitch)
-			updated = true
+			printEuler(*sensorData)
 		}
 
 	case strings.Contains(data, "qua analog"):
@@ -150,9 +126,50 @@ func processData(data string, sensorData *SensorData) bool {
 		if len(numbers) >= 4 {
 			fmt.Sscanf(strings.Join(numbers, " "), "%f %f %f %f",
 				&sensorData.QuaW, &sensorData.QuaX, &sensorData.QuaY, &sensorData.QuaZ)
-			updated = true
+			printQuaternion(*sensorData)
 		}
 	}
+}
 
-	return updated
+// Print functions for each sensor type
+func printAccelerometer(data SensorData) {
+	fmt.Printf("\nAccelerometer (mg):\n")
+	fmt.Printf("  X: %8.2f\n  Y: %8.2f\n  Z: %8.2f\n",
+		data.AccX, data.AccY, data.AccZ)
+}
+
+func printMagnetometer(data SensorData) {
+	fmt.Printf("\nMagnetometer (µT):\n")
+	fmt.Printf("  X: %8.2f\n  Y: %8.2f\n  Z: %8.2f\n",
+		data.MagX, data.MagY, data.MagZ)
+}
+
+func printGyroscope(data SensorData) {
+	fmt.Printf("\nGyroscope (dps):\n")
+	fmt.Printf("  X: %8.2f\n  Y: %8.2f\n  Z: %8.2f\n",
+		data.GyrX, data.GyrY, data.GyrZ)
+}
+
+func printLinearAcceleration(data SensorData) {
+	fmt.Printf("\nLinear Acceleration (mg):\n")
+	fmt.Printf("  X: %8.2f\n  Y: %8.2f\n  Z: %8.2f\n",
+		data.LiaX, data.LiaY, data.LiaZ)
+}
+
+func printGravity(data SensorData) {
+	fmt.Printf("\nGravity Vector (mg):\n")
+	fmt.Printf("  X: %8.2f\n  Y: %8.2f\n  Z: %8.2f\n",
+		data.GrvX, data.GrvY, data.GrvZ)
+}
+
+func printEuler(data SensorData) {
+	fmt.Printf("\nEuler Angles (degrees):\n")
+	fmt.Printf("  Heading: %8.2f\n  Roll: %8.2f\n  Pitch: %8.2f\n",
+		data.EulHeading, data.EulRoll, data.EulPitch)
+}
+
+func printQuaternion(data SensorData) {
+	fmt.Printf("\nQuaternion:\n")
+	fmt.Printf("  W: %8.2f\n  X: %8.2f\n  Y: %8.2f\n  Z: %8.2f\n",
+		data.QuaW, data.QuaX, data.QuaY, data.QuaZ)
 }
