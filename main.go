@@ -30,24 +30,7 @@ type SensorData struct {
 }
 
 func main() {
-	// List available ports
-	ports, err := serial.GetPortsList()
-	if err != nil {
-		log.Fatal(err)
-	}
-	if len(ports) == 0 {
-		log.Fatal("No serial ports found!")
-	}
-
-	fmt.Println("Available ports:")
-	for _, port := range ports {
-		fmt.Printf("- %v\n", port)
-	}
-
-	// Prompt user to select a port
-	var selectedPort string
-	fmt.Print("Enter the port to use: ")
-	fmt.Scanln(&selectedPort)
+	selectedPort := "COM3" // Fixed to COM3
 
 	// Open the serial port
 	mode := &serial.Mode{
@@ -62,7 +45,7 @@ func main() {
 	reader := bufio.NewReader(port)
 	var sensorData SensorData
 
-	fmt.Println("Reading sensor data from Arduino...")
+	fmt.Println("Reading sensor data from COM3...")
 	fmt.Println("Press Ctrl+C to exit")
 
 	for {
