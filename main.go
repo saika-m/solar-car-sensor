@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -33,16 +34,38 @@ type SensorData struct {
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
-		return true // Allow all origins for development
+		return true
 	},
 }
 
-func main() {
-	// Setup websocket handler
-	http.HandleFunc("/ws", handleWebSocket)
+var (
+	serialPort serial.Port
+	portMutex  sync.Mutex
+)
 
-	fmt.Println("Server starting on :8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+func findAndOpenPort() (serial.Port, error) {
+	ports, err := serial.GetPortsList()
+	if err != nil {
+		return nil, fmt.Errorf("error listing ports: %v", err)
+	}
+
+	fmt.Println("Available ports:")
+	for _, port := range ports {
+		fmt.Printf("- %v\n", port)
+	}
+
+	// Try to open each port
+	for _, portName := range ports {
+		fmt.Printf("Trying port %s...\n", portName)
+		port, err := serial.Open(portName, &serial.Mode{BaudRate: 115200})
+		if err == nil {
+			fmt.Printf("Successfully opened port %s\n", portName)
+			return port, nil
+		}
+		fmt.Printf("Failed to open %s: %v\n", portName, err)
+	}
+
+	return nil, fmt.Errorf("no available serial ports found")
 }
 
 func handleWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -53,27 +76,45 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	// Open serial port
-	port, err := serial.Open("COM3", &serial.Mode{BaudRate: 115200})
-	if err != nil {
-		log.Printf("Serial port error: %v", err)
-		return
+	// Get or create serial port connection
+	portMutex.Lock()
+	if serialPort == nil {
+		var err error
+		serialPort, err = findAndOpenPort()
+		if err != nil {
+			portMutex.Unlock()
+			log.Printf("Failed to open any serial port: %v", err)
+			return
+		}
 	}
-	defer port.Close()
+	portMutex.Unlock()
 
-	reader := bufio.NewReader(port)
+	reader := bufio.NewReader(serialPort)
 	sensorData := &SensorData{}
 
+	// Keep trying to read from the port
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			log.Printf("Serial read error: %v", err)
+			// Try to reopen port
+			portMutex.Lock()
+			if serialPort != nil {
+				serialPort.Close()
+			}
+			serialPort, err = findAndOpenPort()
+			portMutex.Unlock()
+			if err != nil {
+				log.Printf("Failed to reopen port: %v", err)
+				time.Sleep(5 * time.Second)
+				continue
+			}
+			reader = bufio.NewReader(serialPort)
 			continue
 		}
 
 		// Process the data
 		if processData(strings.TrimSpace(line), sensorData) {
-			// Send the updated sensor data through WebSocket
 			err = conn.WriteJSON(sensorData)
 			if err != nil {
 				log.Printf("WebSocket write error: %v", err)
@@ -95,10 +136,14 @@ func processData(data string, sensorData *SensorData) bool {
 	re := regexp.MustCompile(`[-]?\d+\.\d+`)
 	updated := false
 
+	// Print raw data for debugging
+	fmt.Printf("Raw data: %s\n", data)
+
 	// Parse different sensor data based on the line prefix
 	switch {
 	case strings.Contains(data, "acc analog"):
 		numbers := re.FindAllString(data, -1)
+		fmt.Printf("Found numbers for acc: %v\n", numbers)
 		if len(numbers) >= 3 {
 			fmt.Sscanf(strings.Join(numbers, " "), "%f %f %f",
 				&sensorData.AccX, &sensorData.AccY, &sensorData.AccZ)
@@ -154,5 +199,17 @@ func processData(data string, sensorData *SensorData) bool {
 		}
 	}
 
+	if updated {
+		fmt.Printf("Updated sensor data: %+v\n", sensorData)
+	}
+
 	return updated
+}
+
+func main() {
+	// Setup HTTP server
+	http.HandleFunc("/ws", handleWebSocket)
+
+	fmt.Println("Server starting on :8080")
+	log.Fatal(http.ListenAndServe(":8080", nil))
 }
