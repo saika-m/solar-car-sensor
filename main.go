@@ -8,7 +8,6 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/gorilla/websocket"
 	"go.bug.st/serial"
@@ -44,9 +43,6 @@ var (
 		CheckOrigin: func(r *http.Request) bool {
 			return true
 		},
-		HandshakeTimeout: 10 * time.Second,
-		ReadBufferSize:   1024,
-		WriteBufferSize:  1024,
 	}
 
 	// Global serial port connection
@@ -57,23 +53,12 @@ var (
 
 	// Global sensor data
 	currentData = &SensorData{}
-
-	// Active connections
-	clients    = make(map[*websocket.Conn]bool)
-	clientsMux sync.RWMutex
 )
 
 // Initialize serial port connection
 func initSerial() error {
 	var err error
-	mode := &serial.Mode{
-		BaudRate: 115200,
-		Parity:   serial.NoParity,
-		StopBits: serial.OneStopBit,
-		DataBits: 8,
-	}
-
-	serialPort, err = serial.Open("COM3", mode)
+	serialPort, err = serial.Open("COM3", &serial.Mode{BaudRate: 115200})
 	if err != nil {
 		return fmt.Errorf("failed to open COM3: %v", err)
 	}
@@ -91,17 +76,18 @@ func readSerialData() {
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			log.Printf("Error reading serial: %v", err)
-			time.Sleep(100 * time.Millisecond) // Add delay on error
 			continue
 		}
 
 		line = strings.TrimSpace(line)
 
+		// Skip markers
 		if strings.Contains(line, "print start") || strings.Contains(line, "print end") {
 			continue
 		}
 
 		mutex.Lock()
+		// Extract values based on line prefix
 		switch {
 		case strings.Contains(line, "acc analog"):
 			if nums := re.FindAllString(line, -1); len(nums) >= 3 {
@@ -113,108 +99,65 @@ func readSerialData() {
 				fmt.Sscanf(strings.Join(nums, " "), "%f %f %f",
 					&currentData.MagX, &currentData.MagY, &currentData.MagZ)
 			}
-			// ... (other cases remain the same)
+		case strings.Contains(line, "gyr analog"):
+			if nums := re.FindAllString(line, -1); len(nums) >= 3 {
+				fmt.Sscanf(strings.Join(nums, " "), "%f %f %f",
+					&currentData.GyrX, &currentData.GyrY, &currentData.GyrZ)
+			}
+		case strings.Contains(line, "lia analog"):
+			if nums := re.FindAllString(line, -1); len(nums) >= 3 {
+				fmt.Sscanf(strings.Join(nums, " "), "%f %f %f",
+					&currentData.LiaX, &currentData.LiaY, &currentData.LiaZ)
+			}
+		case strings.Contains(line, "grv analog"):
+			if nums := re.FindAllString(line, -1); len(nums) >= 3 {
+				fmt.Sscanf(strings.Join(nums, " "), "%f %f %f",
+					&currentData.GrvX, &currentData.GrvY, &currentData.GrvZ)
+			}
+		case strings.Contains(line, "eul analog"):
+			if nums := re.FindAllString(line, -1); len(nums) >= 3 {
+				fmt.Sscanf(strings.Join(nums, " "), "%f %f %f",
+					&currentData.EulHeading, &currentData.EulRoll, &currentData.EulPitch)
+			}
+		case strings.Contains(line, "qua analog"):
+			if nums := re.FindAllString(line, -1); len(nums) >= 4 {
+				fmt.Sscanf(strings.Join(nums, " "), "%f %f %f %f",
+					&currentData.QuaW, &currentData.QuaX, &currentData.QuaY, &currentData.QuaZ)
+			}
 		}
 		mutex.Unlock()
-
-		// Broadcast to all clients
-		broadcastSensorData()
 	}
-}
-
-// Broadcast sensor data to all connected clients
-func broadcastSensorData() {
-	mutex.RLock()
-	data := currentData
-	mutex.RUnlock()
-
-	clientsMux.RLock()
-	for client := range clients {
-		err := client.WriteJSON(data)
-		if err != nil {
-			log.Printf("Error broadcasting to client: %v", err)
-			client.Close()
-			clientsMux.RUnlock()
-			clientsMux.Lock()
-			delete(clients, client)
-			clientsMux.Unlock()
-			clientsMux.RLock()
-		}
-	}
-	clientsMux.RUnlock()
 }
 
 func handleSensor(w http.ResponseWriter, r *http.Request) {
-	// Configure WebSocket connection
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("WebSocket upgrade error: %v", err)
 		return
 	}
+	defer ws.Close()
 
-	// Set connection properties
-	ws.SetReadLimit(512)
-	ws.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	ws.SetPongHandler(func(string) error {
-		ws.SetWriteDeadline(time.Now().Add(10 * time.Second))
-		return nil
-	})
-
-	// Add to active clients
-	clientsMux.Lock()
-	clients[ws] = true
-	clientsMux.Unlock()
-
-	// Start ping-pong
-	go func() {
-		ticker := time.NewTicker(5 * time.Second)
-		defer ticker.Stop()
-		for {
-			<-ticker.C
-			if err := ws.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(time.Second)); err != nil {
-				return
-			}
-		}
-	}()
-
-	// Clean up on exit
-	defer func() {
-		clientsMux.Lock()
-		delete(clients, ws)
-		clientsMux.Unlock()
-		ws.Close()
-	}()
-
-	// Keep connection alive
+	// Send data periodically
 	for {
-		_, _, err := ws.ReadMessage()
+		mutex.RLock()
+		err := ws.WriteJSON(currentData)
+		mutex.RUnlock()
+
 		if err != nil {
-			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("WebSocket read error: %v", err)
-			}
+			log.Printf("WebSocket write error: %v", err)
 			break
 		}
 	}
 }
 
 func main() {
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
-
+	// Initialize serial port
 	if err := initSerial(); err != nil {
 		log.Fatal(err)
 	}
 	defer serialPort.Close()
 
 	http.HandleFunc("/sensor", handleSensor)
-
-	server := &http.Server{
-		Addr:              ":8080",
-		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      15 * time.Second,
-		IdleTimeout:       60 * time.Second,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-
 	fmt.Println("Starting sensor microservice on :8080")
-	log.Fatal(server.ListenAndServe())
+	log.Fatal(http.ListenAndServe(":8080", nil))
 }
